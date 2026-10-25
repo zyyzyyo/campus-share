@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.share.mapper.ItemMapper">
+    <sql id="projection">
+        i.id, i.owner_id, u.nickname AS owner, i.category_id, c.name AS category,
+        i.title, i.description, i.campus, i.pickup_location, i.status, i.created_at,
+        (SELECT image_url FROM item_image WHERE item_id=i.id ORDER BY sort_order, id LIMIT 1) AS image
+    </sql>
+    <sql id="filters">
+        <where>
+            <if test="query.scope == 'mine'">i.owner_id = #{userId}</if>
+            <if test="query.scope == 'favorites'">
+                AND EXISTS (SELECT 1 FROM favorite f WHERE f.item_id=i.id AND f.user_id=#{userId})
+            </if>
+            <if test="query.availableOnly">AND i.status='ON_SHELF'</if>
+            <if test="query.categoryId != null">AND i.category_id=#{query.categoryId}</if>
+            <if test="query.campus != null and query.campus != ''">AND i.campus=#{query.campus}</if>
+            <if test="query.q != null and query.q != ''">
+                AND (LOCATE(LOWER(#{query.q}), LOWER(i.title)) &gt; 0 OR LOCATE(LOWER(#{query.q}), LOWER(i.description)) &gt; 0)
+            </if>
+        </where>
+    </sql>
+    <select id="findPage" resultType="com.campus.share.vo.ItemView">
+        SELECT <include refid="projection"/> FROM item i
+        JOIN app_user u ON u.id=i.owner_id JOIN category c ON c.id=i.category_id
+        <include refid="filters"/>
+        ORDER BY
+        <if test="query.sort == 'recommended'">CASE WHEN i.status='ON_SHELF' THEN 0 ELSE 1 END,</if>
+        i.created_at DESC, i.id DESC LIMIT #{query.size} OFFSET #{offset}
+    </select>
+    <select id="count" resultType="long">
+        SELECT COUNT(*) FROM item i <include refid="filters"/>
+    </select>
+    <select id="findById" resultType="com.campus.share.vo.ItemView">
+        SELECT <include refid="projection"/> FROM item i
+        JOIN app_user u ON u.id=i.owner_id JOIN category c ON c.id=i.category_id WHERE i.id=#{id}
+    </select>
+</mapper>

@@ -1,0 +1,38 @@
+### IDEA HTTP Client / Apifox: 默认先运行 demo 配置
+@baseUrl = http://127.0.0.1:8080
+
+### 健康检查
+GET {{baseUrl}}/api/health
+
+### 注册（同一账号再次注册返回 409）
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "student_01",
+  "password": "CampusPass123!",
+  "nickname": "林同学"
+}
+
+### 登录；IDEA HTTP Client 自动保存 accessToken
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "student_01",
+  "password": "CampusPass123!"
+}
+
+> {% client.global.set("accessToken", response.body.data.accessToken); %}
+
+### 当前用户
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{accessToken}}
+
+### 退出当前登录
+POST {{baseUrl}}/api/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### 退出后应返回 401
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{accessToken}}

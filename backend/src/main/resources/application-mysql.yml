@@ -1,0 +1,6 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:mysql://127.0.0.1:3306/campus_share?useUnicode=true&characterEncoding=UTF-8&connectionTimeZone=UTC}
+    username: root
+    password: zyy050912
+    driver-class-name: com.mysql.cj.jdbc.Driver

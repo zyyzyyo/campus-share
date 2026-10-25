@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.campus.share.mapper.OrderMapper">
+    <sql id="projection">
+        o.id, o.item_id, o.borrower_id, i.owner_id, o.status, o.start_time, o.end_time,
+        o.review_expires_at, o.pickup_expires_at, i.title, owner.nickname AS owner, borrower.nickname AS borrower,
+        (SELECT image_url FROM item_image WHERE item_id=i.id ORDER BY sort_order, id LIMIT 1) AS image
+    </sql>
+    <sql id="joins">
+        FROM borrow_order o JOIN item i ON i.id=o.item_id
+        JOIN app_user owner ON owner.id=i.owner_id JOIN app_user borrower ON borrower.id=o.borrower_id
+    </sql>
+    <sql id="ownership">
+        <choose><when test="role == 'lent'">i.owner_id=#{userId}</when><otherwise>o.borrower_id=#{userId}</otherwise></choose>
+    </sql>
+    <select id="findById" resultType="com.campus.share.entity.OrderRow">
+        SELECT <include refid="projection"/> <include refid="joins"/> WHERE o.id=#{id}
+    </select>
+    <select id="findPage" resultType="com.campus.share.entity.OrderRow">
+        SELECT <include refid="projection"/> <include refid="joins"/> WHERE <include refid="ownership"/>
+        ORDER BY o.created_at DESC, o.id DESC LIMIT #{size} OFFSET #{offset}
+    </select>
+    <select id="count" resultType="long">
+        SELECT COUNT(*) FROM borrow_order o JOIN item i ON i.id=o.item_id WHERE <include refid="ownership"/>
+    </select>
+</mapper>
