@@ -1,4 +1,15 @@
 spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      connect-timeout: 2s
+      timeout: 2s
+      repositories:
+        enabled: false
   application:
     name: campus-share-backend
   profiles:
@@ -20,13 +31,30 @@ server:
     include-message: never
     include-stacktrace: never
 
-mybatis:
+mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
   configuration:
     map-underscore-to-camel-case: true
     arg-name-based-constructor-auto-mapping: true
 
 app:
+  booking:
+    submit-cooldown: 5s
+  items:
+    cache-ttl: 2m
+    popularity-window: 10m
+  redis:
+    key-prefix: ${REDIS_KEY_PREFIX:campus-share}
+  rate-limit:
+    login:
+      max-requests: 10
+      window: 1m
+    register:
+      max-requests: 5
+      window: 1m
+    booking:
+      max-requests: 10
+      window: 1m
   uploads:
     directory: ${UPLOAD_DIRECTORY:./data/uploads}
   auth:

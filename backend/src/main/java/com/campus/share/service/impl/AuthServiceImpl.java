@@ -2,7 +2,7 @@ package com.campus.share.service.impl;
 
 import com.campus.share.dto.AuthRequests;
 import com.campus.share.entity.UserAccount;
-import com.campus.share.mapper.SessionMapper;
+import com.campus.share.security.RedisSessionStore;
 import com.campus.share.mapper.UserMapper;
 import com.campus.share.security.AuthenticatedUser;
 import com.campus.share.service.AuthService;
@@ -17,7 +17,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Locale;
@@ -32,16 +31,16 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class AuthServiceImpl implements AuthService {
     private final UserMapper users;
-    private final SessionMapper sessions;
+    private final RedisSessionStore sessions;
     private final PasswordEncoder passwords;
     private final Clock clock;
     private final Duration tokenTtl;
     private final SecureRandom random = new SecureRandom();
     private final String dummyPasswordHash;
 
-    public AuthServiceImpl(UserMapper users, SessionMapper sessions, PasswordEncoder passwords, Clock clock,
+    public AuthServiceImpl(UserMapper users, RedisSessionStore sessions, PasswordEncoder passwords, Clock clock,
                        @Value("${app.auth.token-ttl}") Duration tokenTtl) {
-        if (tokenTtl.isNegative() || tokenTtl.isZero()) throw new IllegalArgumentException("Token TTL must be positive");
+        if (tokenTtl.toMillis() <= 0) throw new IllegalArgumentException("Token TTL must be at least 1 ms");
         this.users = users;
         this.sessions = sessions;
         this.passwords = passwords;
@@ -62,7 +61,6 @@ public class AuthServiceImpl implements AuthService {
         return UserView.from(users.findByUsername(username));
     }
 
-    @Transactional
     public LoginResult login(AuthRequests.Login request) {
         validatePasswordBytes(request.password());
         UserAccount user = users.findByUsername(request.username().toLowerCase(Locale.ROOT));
@@ -75,17 +73,25 @@ public class AuthServiceImpl implements AuthService {
         random.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         Instant expiresAt = clock.instant().plus(tokenTtl);
-        sessions.insert(user.id(), hash(token), LocalDateTime.ofInstant(expiresAt, ZoneOffset.UTC), now());
+        sessions.save(hash(token), user.id(), expiresAt);
         return new LoginResult(token, "Bearer", expiresAt, UserView.from(user));
     }
 
     public AuthenticatedUser authenticate(String token) {
         if (token == null || !token.matches("[A-Za-z0-9_-]{43}")) return null;
-        return sessions.findActive(hash(token), now());
+        String tokenHash = hash(token);
+        Long userId = sessions.findUserId(tokenHash);
+        if (userId == null) return null;
+        UserAccount user = users.findById(userId);
+        if (user == null || !"ACTIVE".equals(user.status())) {
+            sessions.delete(tokenHash);
+            return null;
+        }
+        return new AuthenticatedUser(user.id(), user.username(), user.nickname(), tokenHash);
     }
 
     public void logout(AuthenticatedUser user) {
-        sessions.deleteByHash(user.tokenHash());
+        sessions.delete(user.tokenHash());
     }
 
     private LocalDateTime now() { return LocalDateTime.now(clock); }

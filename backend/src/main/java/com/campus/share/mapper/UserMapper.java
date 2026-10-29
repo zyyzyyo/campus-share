@@ -10,6 +10,9 @@ import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface UserMapper {
+    @Select("SELECT id, username, password_hash, nickname, status, created_at FROM app_user WHERE id = #{id}")
+    UserAccount findById(Long id);
+
     @Select("SELECT id, username, password_hash, nickname, status, created_at FROM app_user WHERE username = #{username}")
     UserAccount findByUsername(String username);
 

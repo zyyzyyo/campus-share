@@ -1,11 +1,13 @@
 package com.campus.share.service.impl;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.campus.share.common.BusinessException;
 import com.campus.share.dto.*;
 import com.campus.share.entity.*;
 import com.campus.share.mapper.*;
 import com.campus.share.security.AuthenticatedUser;
 import com.campus.share.service.ItemService;
+import com.campus.share.service.ItemDetailCache;
 import com.campus.share.vo.*;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -23,8 +25,10 @@ public class ItemServiceImpl implements ItemService {
     private final FavoriteMapper favorites;
     private final MediaMapper media;
     private final Clock clock;
-    public ItemServiceImpl(ItemMapper items, CategoryMapper categories, FavoriteMapper favorites, MediaMapper media, Clock clock) {
+    private final ItemDetailCache cache;
+    public ItemServiceImpl(ItemMapper items, CategoryMapper categories, FavoriteMapper favorites, MediaMapper media, Clock clock, ItemDetailCache cache) {
         this.items = items; this.categories = categories; this.favorites = favorites; this.media = media; this.clock = clock;
+        this.cache=cache;
     }
     public List<CategoryView> categories() { return categories.findAll(); }
     public PageResult<ItemView> list(ItemQuery query, AuthenticatedUser user) {
@@ -40,6 +44,9 @@ public class ItemServiceImpl implements ItemService {
         return new PageResult<>(items.findPage(query, userId, query.getOffset()), items.count(query, userId), query.page(), query.size());
     }
     public ItemView detail(Long id) {
+        return cache.get(id,() -> databaseDetail(id));
+    }
+    private ItemView databaseDetail(Long id) {
         ItemView item = items.findById(id);
         if (item == null) throw new BusinessException(HttpStatus.NOT_FOUND, "ITEM_NOT_FOUND", "物品不存在");
         return item;
@@ -48,28 +55,34 @@ public class ItemServiceImpl implements ItemService {
     public ItemView create(ItemRequest request, Long userId) {
         validateReferences(request, userId);
         ItemEntity item = entity(request, userId);
+        item.setStatus("ON_SHELF"); item.setCreatedAt(item.getUpdatedAt());
         items.insert(item);
         saveImage(item.getId(), request.imageUrl());
-        return detail(item.getId());
+        cache.invalidateAfterCommit(item.getId());
+        return databaseDetail(item.getId());
     }
     @Transactional
     public ItemView update(Long id, ItemRequest request, Long userId) {
         requireOwner(id, userId);
         validateReferences(request, userId);
         ItemEntity item = entity(request, userId); item.setId(id);
-        items.update(item);
+        items.updateById(item);
         items.deleteImages(id); saveImage(id, request.imageUrl());
-        return detail(id);
+        cache.invalidateAfterCommit(id);
+        return databaseDetail(id);
     }
     @Transactional
     public ItemView changeStatus(Long id, String status, Long userId) {
         requireOwner(id, userId);
-        items.updateStatus(id, status, LocalDateTime.now(clock));
-        return detail(id);
+        items.update(null, Wrappers.<ItemEntity>lambdaUpdate()
+                .eq(ItemEntity::getId, id).set(ItemEntity::getStatus, status)
+                .set(ItemEntity::getUpdatedAt, LocalDateTime.now(clock)));
+        cache.invalidateAfterCommit(id);
+        return databaseDetail(id);
     }
     public List<Long> favorites(Long userId) { return favorites.findIds(userId); }
     public void addFavorite(Long id, Long userId) {
-        detail(id);
+        databaseDetail(id);
         try { favorites.insert(userId, id); } catch (DuplicateKeyException ignored) { /* PUT is idempotent. */ }
     }
     public void removeFavorite(Long id, Long userId) { favorites.delete(userId, id); }
@@ -91,7 +104,7 @@ public class ItemServiceImpl implements ItemService {
         ItemEntity item = new ItemEntity();
         item.setOwnerId(userId); item.setCategoryId(request.categoryId()); item.setTitle(request.title().strip());
         item.setDescription(request.description().strip()); item.setCampus(request.campus());
-        item.setPickupLocation(request.pickupLocation().strip()); item.setNow(LocalDateTime.now(clock));
+        item.setPickupLocation(request.pickupLocation().strip()); item.setUpdatedAt(LocalDateTime.now(clock));
         return item;
     }
 }
