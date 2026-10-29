@@ -4,7 +4,8 @@
     <sql id="projection">
         o.id, o.item_id, o.borrower_id, i.owner_id, o.status, o.start_time, o.end_time,
         o.review_expires_at, o.pickup_expires_at, i.title, owner.nickname AS owner, borrower.nickname AS borrower,
-        (SELECT image_url FROM item_image WHERE item_id=i.id ORDER BY sort_order, id LIMIT 1) AS image
+        (SELECT image_url FROM item_image WHERE item_id=i.id ORDER BY sort_order, id LIMIT 1) AS image,
+        o.picked_up_at, o.renewal_end_time, o.renewal_status, o.cancel_reason, o.renewal_sequence
     </sql>
     <sql id="joins">
         FROM borrow_order o JOIN item i ON i.id=o.item_id

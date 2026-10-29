@@ -4,6 +4,9 @@ import com.campus.share.common.ApiResponse;
 import com.campus.share.dto.*;
 import com.campus.share.security.AuthenticatedUser;
 import com.campus.share.service.ItemService;
+import com.campus.share.service.OrderService;
+import com.campus.share.service.ItemPopularityService;
+import jakarta.servlet.http.HttpServletRequest;
 import com.campus.share.vo.*;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -14,7 +17,19 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 public class ItemController {
     private final ItemService service;
-    public ItemController(ItemService service) { this.service = service; }
+    private final OrderService orders;
+    private final ItemPopularityService popularity;
+    public ItemController(ItemService service, OrderService orders, ItemPopularityService popularity) {
+        this.service = service; this.orders = orders; this.popularity=popularity;
+    }
+    @GetMapping("/api/items/popular")
+    public ApiResponse<PopularItemsView> popular(@RequestParam(defaultValue="6") int limit) {
+        return ApiResponse.success(popularity.popular(limit));
+    }
+    @GetMapping("/api/items/{id}/reservations")
+    public ApiResponse<List<ReservationView>> reservations(@PathVariable Long id) {
+        return ApiResponse.success(orders.reservations(id));
+    }
     @GetMapping("/api/categories")
     public ApiResponse<List<CategoryView>> categories() { return ApiResponse.success(service.categories()); }
     @GetMapping("/api/items")
@@ -27,7 +42,11 @@ public class ItemController {
         return ApiResponse.success(service.list(new ItemQuery(scope, q.strip(), categoryId, campus, availableOnly, sort, page, size), user));
     }
     @GetMapping("/api/items/{id}")
-    public ApiResponse<ItemView> detail(@PathVariable Long id) { return ApiResponse.success(service.detail(id)); }
+    public ApiResponse<ItemView> detail(@PathVariable Long id, @AuthenticationPrincipal AuthenticatedUser user, HttpServletRequest request) {
+        ItemView item=service.detail(id);
+        popularity.record(item,user==null ? null : user.id(),request.getRemoteAddr());
+        return ApiResponse.success(item);
+    }
     @PostMapping("/api/items") @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<ItemView> create(@Valid @RequestBody ItemRequest request, @AuthenticationPrincipal AuthenticatedUser user) {
         return ApiResponse.success(service.create(request, user.id()));

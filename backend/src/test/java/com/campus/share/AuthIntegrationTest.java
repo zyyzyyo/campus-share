@@ -4,7 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.time.LocalDateTime;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import java.util.HexFormat;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -27,7 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-class AuthIntegrationTest {
+class AuthIntegrationTest extends RedisTestSupport {
     private static final String PASSWORD = "CampusPass123!";
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
@@ -95,9 +96,13 @@ class AuthIntegrationTest {
         assertThat(token).matches("[A-Za-z0-9_-]{43}");
         assertThat(login.path("tokenType").asText()).isEqualTo("Bearer");
         assertThat(login.path("expiresAt").asText()).endsWith("Z");
-        String storedHash = jdbc.queryForObject("SELECT token_hash FROM auth_session", String.class);
-        assertThat(storedHash).isEqualTo(HexFormat.of().formatHex(
-                MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8))));
+        String storedHash = HexFormat.of().formatHex(
+                MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8)));
+        String key = redisPrefix + ":session:" + storedHash;
+        assertThat(redis.opsForValue().get(key)).startsWith(login.path("user").path("id").asText() + ":");
+        assertThat(redis.getExpire(key, TimeUnit.SECONDS)).isBetween(28790L, 28800L);
+        assertThat(redis.hasKey(redisPrefix + ":session:" + token)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM auth_session", Integer.class)).isZero();
         mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.username").value("alice_01"))
                 .andExpect(jsonPath("$.data.tokenHash").doesNotExist())
@@ -133,14 +138,19 @@ class AuthIntegrationTest {
         mvc.perform(post("/api/auth/logout").header("Authorization", "Bearer " + first)).andExpect(status().isOk());
         mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + first)).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + second)).andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM auth_session", Integer.class)).isEqualTo(1);
+        assertThat(redis.keys(redisPrefix + ":session:*")).hasSize(1);
     }
 
     @Test
     void expiredTokensCannotAuthenticate() throws Exception {
         register("alice_01").andExpect(status().isCreated());
         String token = login("alice_01", PASSWORD).path("accessToken").asText();
-        jdbc.update("UPDATE auth_session SET expires_at = ?", LocalDateTime.of(2000, 1, 1, 0, 0));
+        String tokenHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(token.getBytes(StandardCharsets.UTF_8)));
+        String key = redisPrefix + ":session:" + tokenHash;
+        redis.expire(key, Duration.ofMillis(100));
+        org.awaitility.Awaitility.await().atMost(Duration.ofSeconds(3))
+                .until(() -> !Boolean.TRUE.equals(redis.hasKey(key)));
         mvc.perform(get("/api/auth/me").header("Authorization", "Bearer " + token)).andExpect(status().isUnauthorized());
     }
 

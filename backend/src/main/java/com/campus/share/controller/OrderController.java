@@ -2,6 +2,8 @@ package com.campus.share.controller;
 
 import com.campus.share.common.ApiResponse;
 import com.campus.share.dto.OrderRequest;
+import com.campus.share.dto.OrderActionRequest;
+import com.campus.share.dto.RenewalRequest;
 import com.campus.share.security.AuthenticatedUser;
 import com.campus.share.service.OrderService;
 import com.campus.share.vo.*;
@@ -25,7 +27,22 @@ public class OrderController {
         return ApiResponse.success(service.create(request, user.id()));
     }
     @PatchMapping("/{id}/actions/{action}")
-    public ApiResponse<OrderView> act(@PathVariable Long id, @PathVariable String action, @AuthenticationPrincipal AuthenticatedUser user) {
-        return ApiResponse.success(service.act(id, action, user.id()));
+    public ApiResponse<OrderView> act(@PathVariable Long id, @PathVariable String action,
+            @Valid @RequestBody(required=false) OrderActionRequest request, @AuthenticationPrincipal AuthenticatedUser user) {
+        return ApiResponse.success(service.act(id, action, user.id(), request==null ? null : request.reason()));
+    }
+    @GetMapping("/{id}")
+    public ApiResponse<OrderView> detail(@PathVariable Long id, @AuthenticationPrincipal AuthenticatedUser user) {
+        return ApiResponse.success(service.detail(id,user.id()));
+    }
+    @PostMapping("/{id}/renewal")
+    public ApiResponse<OrderView> renew(@PathVariable Long id, @Valid @RequestBody RenewalRequest request,
+            @AuthenticationPrincipal AuthenticatedUser user) {
+        return ApiResponse.success(service.requestRenewal(id,request.endTime(),user.id()));
+    }
+    @PatchMapping("/{id}/renewal/{decision:approve|reject}")
+    public ApiResponse<OrderView> review(@PathVariable Long id, @PathVariable String decision,
+            @AuthenticationPrincipal AuthenticatedUser user) {
+        return ApiResponse.success(service.reviewRenewal(id,decision.equals("approve"),user.id()));
     }
 }

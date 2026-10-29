@@ -49,7 +49,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiResponse<Void>> handleDatabase(DataAccessException exception) {
-        log.error("Database operation failed", exception);
+        log.error("Data store operation failed", exception);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiResponse.failure("SERVICE_UNAVAILABLE", "服务暂不可用，请稍后重试"));
     }

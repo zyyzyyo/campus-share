@@ -28,13 +28,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @Import(BusinessIntegrationTest.TimeConfiguration.class)
-class BusinessIntegrationTest {
+class BusinessIntegrationTest extends RedisTestSupport {
     private static final Instant NOW=Instant.parse("2030-05-01T00:00:00Z");
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
     @Autowired MutableClock clock;
     @Autowired OrderService orderService;
+    @Autowired com.campus.share.mapper.ItemMapper itemMapper;
+    @Autowired com.campus.share.mapper.OrderMapper orderMapper;
     private User owner, borrower;
 
     @TestConfiguration
@@ -52,9 +54,37 @@ class BusinessIntegrationTest {
     @BeforeEach
     void setup() throws Exception {
         clock.value=NOW;
-        for (String table: List.of("order_operation_log","borrow_order","favorite","item_image","item","uploaded_image","auth_session","app_user"))
+        for (String table: List.of("notification","order_operation_log","borrow_order","favorite","item_image","item","uploaded_image","auth_session","app_user"))
             jdbc.update("DELETE FROM " + table);
         owner=user("owner_01"); borrower=user("borrower_01");
+    }
+
+    @Test
+    void plusCrudPreservesItemStatusOwnershipAndCreationTime() throws Exception {
+        long item=createItem(owner,"相机");
+        var created=itemMapper.selectById(item);
+        assertThat(created.getOwnerId()).isEqualTo(owner.id());
+        assertThat(created.getStatus()).isEqualTo("ON_SHELF");
+        assertThat(created.getCreatedAt()).isEqualTo(LocalDateTime.ofInstant(NOW,ZoneOffset.UTC));
+        send("PATCH","/api/items/"+item+"/status",owner,Map.of("status","OFF_SHELF"))
+                .andExpect(status().isOk());
+        clock.value=NOW.plusSeconds(60);
+        send("PUT","/api/items/"+item,owner,itemBody("修改后的相机")).andExpect(status().isOk());
+        var updated=itemMapper.selectById(item);
+        assertThat(updated.getTitle()).isEqualTo("修改后的相机");
+        assertThat(updated.getStatus()).isEqualTo("OFF_SHELF");
+        assertThat(updated.getOwnerId()).isEqualTo(owner.id());
+        assertThat(updated.getCreatedAt()).isEqualTo(created.getCreatedAt());
+        assertThat(updated.getUpdatedAt()).isEqualTo(LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC));
+        send("PATCH","/api/items/"+item+"/status",owner,Map.of("status","ON_SHELF"))
+                .andExpect(status().isOk());
+        long order=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        var saved=orderMapper.selectById(order);
+        assertThat(saved.getItemId()).isEqualTo(item);
+        assertThat(saved.getBorrowerId()).isEqualTo(borrower.id());
+        assertThat(saved.getStatus()).isEqualTo("PENDING_REVIEW");
+        assertThat(saved.getStartTime()).isEqualTo(LocalDateTime.ofInstant(NOW.plusSeconds(3600),ZoneOffset.UTC));
+        assertThat(saved.getCreatedAt()).isEqualTo(LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC));
     }
 
     @Test
@@ -113,6 +143,35 @@ class BusinessIntegrationTest {
     }
 
     @Test
+    void publicReservationsShowOnlyActiveIntervalsWithoutPersonalInformation() throws Exception {
+        long item=createItem(owner,"相机"), other=createItem(owner,"台灯");
+        long first=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        long second=data(apply(item,borrower,NOW.plusSeconds(10800),NOW.plusSeconds(14400))).path("id").asLong();
+        mvc.perform(get("/api/items/"+item+"/reservations"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(0));
+        action(second,"approve",owner).andExpect(status().isOk());
+        action(first,"approve",owner).andExpect(status().isOk());
+        JsonNode slots=data(mvc.perform(get("/api/items/"+item+"/reservations"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(2)));
+        assertThat(slots.get(0).path("startTime").asText()).isEqualTo(NOW.plusSeconds(3600).toString());
+        assertThat(slots.get(0).path("endTime").asText()).isEqualTo(NOW.plusSeconds(7200).toString());
+        assertThat(slots.get(0).size()).isEqualTo(3);
+        assertThat(slots.get(0).path("status").asText()).isEqualTo("AWAITING_PICKUP");
+        mvc.perform(get("/api/items/"+other+"/reservations")).andExpect(jsonPath("$.data.length()").value(0));
+        for (String state: List.of("BORROWING", "RETURN_REQUESTED")) {
+            jdbc.update("UPDATE borrow_order SET status=? WHERE id=?",state,first);
+            mvc.perform(get("/api/items/"+item+"/reservations")).andExpect(jsonPath("$.data.length()").value(2));
+        }
+        for (String state: List.of("COMPLETED", "CANCELLED", "REJECTED", "EXPIRED", "PENDING_REVIEW")) {
+            jdbc.update("UPDATE borrow_order SET status=? WHERE id=?",state,first);
+            mvc.perform(get("/api/items/"+item+"/reservations")).andExpect(jsonPath("$.data.length()").value(1));
+        }
+        clock.value=NOW.plusSeconds(14400);
+        mvc.perform(get("/api/items/"+item+"/reservations")).andExpect(jsonPath("$.data.length()").value(0));
+        mvc.perform(get("/api/items/9223372036854775807/reservations")).andExpect(status().isNotFound());
+    }
+
+    @Test
     void pendingDoesNotReserveAndDuplicateOwnApplicationIsRejected() throws Exception {
         long item=createItem(owner,"相机");
         apply(item,owner,NOW.plusSeconds(3600),NOW.plusSeconds(7200)).andExpect(status().isBadRequest());
@@ -164,10 +223,9 @@ class BusinessIntegrationTest {
         long item=createItem(owner,"相机");
         long id=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(10800))).path("id").asLong();
         action(id,"approve",owner).andExpect(status().isOk());
-        action(id,"pickup",owner).andExpect(status().isConflict());
         send("PATCH","/api/items/"+item+"/status",owner,Map.of("status","OFF_SHELF")).andExpect(status().isOk());
-        clock.value=NOW.plusSeconds(3660);
-        action(id,"pickup",owner).andExpect(status().isOk());
+        action(id,"pickup",borrower).andExpect(status().isForbidden());
+        action(id,"pickup",owner).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("BORROWING"));
         action(id,"pickup",owner).andExpect(status().isOk());
         action(id,"request-return",borrower).andExpect(status().isOk());
         action(id,"complete",owner).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("COMPLETED"));
@@ -176,6 +234,28 @@ class BusinessIntegrationTest {
         mvc.perform(get("/api/orders").param("role","lent").header("Authorization",bearer(owner)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
         mvc.perform(get("/api/orders").header("Authorization",bearer(owner))).andExpect(jsonPath("$.data.total").value(0));
+    }
+
+    @Test
+    void earlyPickupRequiresApprovalAndNoUnreturnedItemAndRespectsDeadline() throws Exception {
+        long item=createItem(owner,"相机");
+        long first=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        long second=data(apply(item,borrower,NOW.plusSeconds(7200),NOW.plusSeconds(14400))).path("id").asLong();
+        action(first,"pickup",owner).andExpect(status().isConflict());
+        action(first,"approve",owner).andExpect(status().isOk());
+        action(second,"approve",owner).andExpect(status().isOk());
+        action(first,"pickup",owner).andExpect(status().isOk());
+        action(second,"pickup",owner).andExpect(status().isConflict());
+        action(first,"request-return",borrower).andExpect(status().isOk());
+        action(second,"pickup",owner).andExpect(status().isConflict());
+        action(first,"complete",owner).andExpect(status().isOk());
+        action(second,"pickup",owner).andExpect(status().isOk());
+
+        long other=createItem(owner,"台灯");
+        long expired=data(apply(other,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        action(expired,"approve",owner).andExpect(status().isOk());
+        clock.value=NOW.plusSeconds(7200);
+        action(expired,"pickup",owner).andExpect(status().isConflict());
     }
 
     @Test
@@ -204,6 +284,152 @@ class BusinessIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT status FROM borrow_order WHERE id=?",String.class,pickup)).isEqualTo("EXPIRED");
         assertThat(jdbc.queryForObject("SELECT status FROM borrow_order WHERE id=?",String.class,borrowing)).isEqualTo("BORROWING");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_operation_log WHERE operator_type='SYSTEM'",Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void notificationsArePrivateAndRepeatedActionsDoNotSendTwice() throws Exception {
+        long item=createItem(owner,"相机");
+        long id=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        mvc.perform(get("/api/notifications")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/notifications/unread-count").header("Authorization",bearer(owner))).andExpect(jsonPath("$.data").value(1));
+        long notification=data(mvc.perform(get("/api/notifications").header("Authorization",bearer(owner))))
+                .path("items").get(0).path("id").asLong();
+        send("PATCH","/api/notifications/"+notification+"/read",borrower,null).andExpect(status().isOk());
+        mvc.perform(get("/api/notifications/unread-count").header("Authorization",bearer(owner))).andExpect(jsonPath("$.data").value(1));
+        send("PATCH","/api/notifications/"+notification+"/read",owner,null).andExpect(status().isOk());
+        send("PATCH","/api/notifications/read-all",owner,null).andExpect(status().isOk());
+        mvc.perform(get("/api/notifications/unread-count").header("Authorization",bearer(owner))).andExpect(jsonPath("$.data").value(0));
+        action(id,"approve",owner).andExpect(status().isOk()); action(id,"approve",owner).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE user_id=?",Integer.class,borrower.id())).isEqualTo(1);
+        User third=user("third_01");
+        mvc.perform(get("/api/orders/"+id).header("Authorization",bearer(third))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/notifications").param("page","0").header("Authorization",bearer(owner))).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void renewalRequiresApprovalAndCanBeRejectedOrRetried() throws Exception {
+        long id=borrowingOrder();
+        Map<String,String> request=Map.of("endTime",NOW.plusSeconds(10800).toString());
+        send("POST","/api/orders/"+id+"/renewal",owner,request).andExpect(status().isForbidden());
+        send("POST","/api/orders/"+id+"/renewal",borrower,request).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.renewalStatus").value("PENDING"))
+                .andExpect(jsonPath("$.data.endTime").value(NOW.plusSeconds(7200).toString()));
+        send("POST","/api/orders/"+id+"/renewal",borrower,request).andExpect(status().isOk());
+        send("PATCH","/api/orders/"+id+"/renewal/approve",borrower,null).andExpect(status().isForbidden());
+        send("PATCH","/api/orders/"+id+"/renewal/reject",owner,null).andExpect(status().isOk());
+        send("POST","/api/orders/"+id+"/renewal",borrower,request).andExpect(status().isOk());
+        send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.endTime").value(NOW.plusSeconds(10800).toString()));
+        send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key LIKE '%renewal-request:%'",Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key LIKE '%renewal-review:%'",Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void renewalRechecksConflictsAtApprovalAndReturnInvalidatesPendingRequest() throws Exception {
+        long id=borrowingOrder();
+        long item=orderMapper.selectById(id).getItemId();
+        send("POST","/api/orders/"+id+"/renewal",borrower,Map.of("endTime",NOW.plusSeconds(10800).toString())).andExpect(status().isOk());
+        User third=user("third_01");
+        long next=data(apply(item,third,NOW.plusSeconds(7200),NOW.plusSeconds(14400))).path("id").asLong();
+        action(next,"approve",owner).andExpect(status().isOk());
+        send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andExpect(status().isConflict());
+        action(id,"request-return",borrower).andExpect(status().isOk()).andExpect(jsonPath("$.data.renewalStatus").value("CANCELLED"));
+        send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andExpect(status().isConflict());
+    }
+
+    @Test
+    void overdueRestrictsBookingAndRemindersAreDeduplicatedUntilReturn() throws Exception {
+        long id=borrowingOrder(); long other=createItem(owner,"台灯");
+        orderService.expireOverdue(); orderService.expireOverdue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key LIKE '%:due:%'",Integer.class)).isEqualTo(1);
+        clock.value=NOW.plusSeconds(7260);
+        mvc.perform(get("/api/orders/"+id).header("Authorization",bearer(borrower))).andExpect(jsonPath("$.data.overdue").value(true)).andExpect(jsonPath("$.data.overdueMinutes").value(1));
+        apply(other,borrower,NOW.plusSeconds(10800),NOW.plusSeconds(14400)).andExpect(status().isConflict());
+        send("POST","/api/orders/"+id+"/renewal",borrower,Map.of("endTime",NOW.plusSeconds(10800).toString())).andExpect(status().isConflict());
+        orderService.expireOverdue(); orderService.expireOverdue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key LIKE '%:overdue:%'",Integer.class)).isEqualTo(2);
+        action(id,"remind",borrower).andExpect(status().isForbidden());
+        action(id,"remind",owner).andExpect(status().isOk()); action(id,"remind",owner).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key LIKE '%:urge:%'",Integer.class)).isEqualTo(1);
+        action(id,"request-return",borrower).andExpect(status().isOk()).andExpect(jsonPath("$.data.overdue").value(true));
+        action(id,"complete",owner).andExpect(status().isOk()).andExpect(jsonPath("$.data.overdue").value(false));
+        apply(other,borrower,NOW.plusSeconds(10800),NOW.plusSeconds(14400)).andExpect(status().isCreated());
+    }
+
+    @Test
+    void ownerCancellationRequiresReasonAndCannotCancelAfterPickup() throws Exception {
+        long item=createItem(owner,"相机");
+        long id=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        action(id,"owner-cancel",owner).andExpect(status().isBadRequest());
+        send("PATCH","/api/orders/"+id+"/actions/owner-cancel",borrower,Map.of("reason","不能交付")).andExpect(status().isForbidden());
+        action(id,"approve",owner).andExpect(status().isOk());
+        send("PATCH","/api/orders/"+id+"/actions/owner-cancel",owner,Map.of("reason","相机需要维修")).andExpect(status().isOk()).andExpect(jsonPath("$.data.cancelReason").value("相机需要维修"));
+        send("PATCH","/api/orders/"+id+"/actions/owner-cancel",owner,Map.of("reason","相机需要维修")).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key=?",Integer.class,id+":owner-cancel")).isEqualTo(1);
+        long held=borrowingOrder();
+        send("PATCH","/api/orders/"+held+"/actions/owner-cancel",owner,Map.of("reason","不能交付")).andExpect(status().isConflict());
+    }
+
+    @Test
+    void earlyPickupCannotSkipEarlierApprovedBookingAndActualIntervalIsReserved() throws Exception {
+        long item=createItem(owner,"相机"); User third=user("third_01");
+        long first=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        long later=data(apply(item,third,NOW.plusSeconds(7200),NOW.plusSeconds(10800))).path("id").asLong();
+        action(first,"approve",owner).andExpect(status().isOk()); action(later,"approve",owner).andExpect(status().isOk());
+        action(later,"pickup",owner).andExpect(status().isConflict());
+        action(first,"pickup",owner).andExpect(status().isOk()).andExpect(jsonPath("$.data.pickedUpAt").value(NOW.toString()));
+        mvc.perform(get("/api/items/"+item+"/reservations")).andExpect(jsonPath("$.data[0].startTime").value(NOW.toString()));
+        apply(item,third,NOW.plusSeconds(60),NOW.plusSeconds(1800)).andExpect(status().isConflict());
+    }
+
+    @Test
+    void notificationFailureRollsBackStateAndOperationLog() throws Exception {
+        long item=createItem(owner,"相机");
+        long id=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        jdbc.execute("ALTER TABLE notification ADD CONSTRAINT test_fail_notification CHECK (event_key NOT LIKE '%:approve')");
+        try {
+            action(id,"approve",owner).andExpect(status().isServiceUnavailable());
+            assertThat(orderMapper.selectById(id).getStatus()).isEqualTo("PENDING_REVIEW");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_operation_log WHERE order_id=?",Integer.class,id)).isEqualTo(1);
+        } finally { jdbc.execute("ALTER TABLE notification DROP CONSTRAINT test_fail_notification"); }
+    }
+
+    @Test
+    void concurrentRenewalAndNextBookingApprovalCannotBothReserveSameTime() throws Exception {
+        long id=borrowingOrder(); long item=orderMapper.selectById(id).getItemId(); User third=user("third_01");
+        long next=data(apply(item,third,NOW.plusSeconds(7200),NOW.plusSeconds(14400))).path("id").asLong();
+        send("POST","/api/orders/"+id+"/renewal",borrower,Map.of("endTime",NOW.plusSeconds(10800).toString())).andExpect(status().isOk());
+        ExecutorService pool=Executors.newFixedThreadPool(2); CountDownLatch start=new CountDownLatch(1);
+        try {
+            Future<Integer> renewal=pool.submit(() -> { start.await(); return send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andReturn().getResponse().getStatus(); });
+            Future<Integer> booking=pool.submit(() -> { start.await(); return action(next,"approve",owner).andReturn().getResponse().getStatus(); });
+            start.countDown();
+            assertThat(List.of(renewal.get(15,TimeUnit.SECONDS),booking.get(15,TimeUnit.SECONDS))).containsExactlyInAnyOrder(200,409);
+        } finally { pool.shutdownNow(); }
+    }
+
+    @Test
+    void approvedRenewalCreatesNewDueReminderAndExpiredRequestCannotBeApproved() throws Exception {
+        long id=borrowingOrder();
+        orderService.expireOverdue();
+        send("POST","/api/orders/"+id+"/renewal",borrower,Map.of("endTime",NOW.plusSeconds(10800).toString())).andExpect(status().isOk());
+        send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andExpect(status().isOk());
+        orderService.expireOverdue(); orderService.expireOverdue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM notification WHERE event_key LIKE '%:due:%'",Integer.class)).isEqualTo(2);
+        send("POST","/api/orders/"+id+"/renewal",borrower,Map.of("endTime",NOW.plusSeconds(14400).toString())).andExpect(status().isOk());
+        clock.value=NOW.plusSeconds(10800);
+        send("PATCH","/api/orders/"+id+"/renewal/approve",owner,null).andExpect(status().isConflict());
+        orderService.expireOverdue();
+        mvc.perform(get("/api/orders/"+id).header("Authorization",bearer(borrower)))
+                .andExpect(jsonPath("$.data.renewalStatus").value("CANCELLED")).andExpect(jsonPath("$.data.overdue").value(true));
+    }
+
+    private long borrowingOrder() throws Exception {
+        long item=createItem(owner,"相机");
+        long id=data(apply(item,borrower,NOW.plusSeconds(3600),NOW.plusSeconds(7200))).path("id").asLong();
+        action(id,"approve",owner).andExpect(status().isOk()); action(id,"pickup",owner).andExpect(status().isOk());
+        return id;
     }
 
     private User user(String username) throws Exception {

@@ -35,4 +35,10 @@
         SELECT <include refid="projection"/> FROM item i
         JOIN app_user u ON u.id=i.owner_id JOIN category c ON c.id=i.category_id WHERE i.id=#{id}
     </select>
+    <select id="findPublishedByIds" resultType="com.campus.share.vo.ItemView">
+        SELECT <include refid="projection"/> FROM item i
+        JOIN app_user u ON u.id=i.owner_id JOIN category c ON c.id=i.category_id
+        WHERE i.status='ON_SHELF' AND i.id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    </select>
 </mapper>
