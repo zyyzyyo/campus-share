@@ -22,6 +22,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
+        <!-- 用于分布式锁，现有 Redis 缓存仍使用 StringRedisTemplate -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson</artifactId>
+            <version>3.52.0</version>
+        </dependency>
         <dependency>
             <groupId>com.github.codemonstur</groupId>
             <artifactId>embedded-redis</artifactId>

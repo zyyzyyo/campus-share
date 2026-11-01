@@ -45,6 +45,7 @@ class ItemRedisIntegrationTest extends RedisTestSupport {
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
     @Autowired ItemService service;
+    @Autowired org.redisson.api.RedissonClient redisson;
     @Autowired ItemPopularityService popularity;
     @Autowired MutableClock clock;
     @Autowired PlatformTransactionManager transactions;
@@ -109,7 +110,7 @@ class ItemRedisIntegrationTest extends RedisTestSupport {
     @Test
     void oldInFlightLoadCannotRefillCacheAfterCommittedEdit() throws Exception {
         long id=item("相机"); ItemView old=mapper.findById(id);
-        ItemDetailCache cache=new ItemDetailCache(redis,json,redisPrefix,Duration.ofMinutes(2));
+        ItemDetailCache cache=new ItemDetailCache(redis,json,redisson,redisPrefix,Duration.ofMinutes(2));
         CountDownLatch loading=new CountDownLatch(1),edited=new CountDownLatch(1);
         ExecutorService pool=Executors.newSingleThreadExecutor();
         try {
@@ -128,19 +129,26 @@ class ItemRedisIntegrationTest extends RedisTestSupport {
     }
 
     @Test
-    void corruptedCacheAndRedisFailureFallBackToDatabase() throws Exception {
+    void corruptedCacheAndRedisFailureRejectWithoutDatabaseLoads() throws Exception {
         long id=item("相机");
         redis.opsForValue().set(detailKey(id),"broken-json",Duration.ofMinutes(2));
-        ItemDetailCache isolated=new ItemDetailCache(redis,json,redisPrefix,Duration.ofMinutes(2));
-        assertThat(isolated.get(id,() -> mapper.findById(id)).title()).isEqualTo("相机");
+        ItemDetailCache isolated=new ItemDetailCache(redis,json,redisson,redisPrefix,Duration.ofMinutes(2));
+        AtomicInteger corruptedLoads=new AtomicInteger();
+        assertThatThrownBy(() -> isolated.get(id,() -> { corruptedLoads.incrementAndGet(); return mapper.findById(id); }))
+                .isInstanceOfSatisfying(com.campus.share.common.BusinessException.class,
+                        ex -> assertThat(ex.getStatus()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+        assertThat(corruptedLoads).hasValue(0);
         assertThat(redis.hasKey(detailKey(id))).isFalse();
         StringRedisTemplate failed=mock(StringRedisTemplate.class);
         doThrow(new RedisConnectionFailureException("offline")).when(failed).execute(any(RedisScript.class),anyList(),any(Object[].class));
-        ItemDetailCache offline=new ItemDetailCache(failed,json,redisPrefix,Duration.ofMinutes(2));
+        ItemDetailCache offline=new ItemDetailCache(failed,json,redisson,redisPrefix,Duration.ofMinutes(2));
         AtomicInteger loads=new AtomicInteger();
-        assertThat(offline.get(id,() -> { loads.incrementAndGet(); return mapper.findById(id); }).id()).isEqualTo(id);
-        offline.get(id,() -> { loads.incrementAndGet(); return mapper.findById(id); });
-        assertThat(loads).hasValue(2);
+        for (int i=0;i<2;i++) {
+            assertThatThrownBy(() -> offline.get(id,() -> { loads.incrementAndGet(); return mapper.findById(id); }))
+                    .isInstanceOfSatisfying(com.campus.share.common.BusinessException.class,
+                            ex -> assertThat(ex.getStatus()).isEqualTo(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE));
+        }
+        assertThat(loads).hasValue(0);
     }
 
     @Test

@@ -44,7 +44,20 @@ public class ItemServiceImpl implements ItemService {
         return new PageResult<>(items.findPage(query, userId, query.getOffset()), items.count(query, userId), query.page(), query.size());
     }
     public ItemView detail(Long id) {
-        return cache.get(id,() -> databaseDetail(id));
+
+        // 直接查询 Mapper：不存在时返回 null，交给缓存层处理
+        ItemView item = cache.get(id, () -> items.findById(id));
+
+        // 缓存层处理完成后，由业务层决定返回 404
+        if (item == null) {
+            throw new BusinessException(
+                    HttpStatus.NOT_FOUND,
+                    "ITEM_NOT_FOUND",
+                    "物品不存在"
+            );
+        }
+
+        return item;
     }
     private ItemView databaseDetail(Long id) {
         ItemView item = items.findById(id);
@@ -80,7 +93,9 @@ public class ItemServiceImpl implements ItemService {
         cache.invalidateAfterCommit(id);
         return databaseDetail(id);
     }
-    public List<Long> favorites(Long userId) { return favorites.findIds(userId); }
+    public List<Long> favorites(Long userId) {
+        return favorites.findIds(userId);
+    }
     public void addFavorite(Long id, Long userId) {
         databaseDetail(id);
         try { favorites.insert(userId, id); } catch (DuplicateKeyException ignored) { /* PUT is idempotent. */ }
