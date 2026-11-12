@@ -1,7 +1,7 @@
 
 # 校园物品借用平台 · Java 后端
 
-Redis 新增物品详情缓存与校园今日热门榜。详情缓存默认2分钟，修改/上下架在事务提交后失效，Redis异常时回源数据库；浏览热度用 Sorted Set 按北京时间每天统计，同一访客10分钟内对同一物品只计一次，已登录发布者本人不计入。热榜只展示当前上架物品。配置为 application.yml 的 app.items.cache-ttl / popularity-window，无需新增数据库迁移；预约与交付始终由数据库校验。
+Redis 新增物品详情缓存与校园今日热门榜。详情缓存默认2分钟，修改/上下架在事务提交后失效；未命中时用 Redisson 分布式锁重建，并缓存30秒空值防止穿透，Redis 异常时详情读快速失败并限制回源。浏览热度用 Sorted Set 按北京时间每天统计，同一访客10分钟内对同一物品只计一次，已登录发布者本人不计入。热榜只展示当前上架物品。配置为 application.yml 的 app.items.cache-ttl / popularity-window，无需新增数据库迁移；预约与交付始终由数据库校验。
 
 新增业务：站内通知、续期申请与审批、逾期限制和催还、提前领取实际时段冲突校验、发布者填写原因取消。重启后 Flyway 自动执行 V3，保留已有数据，无需手动建表。消息入口在前端“消息通知”，续期与催还在订单卡片中。规则见 [业务说明](docs/business.md)，接口见 [API 说明](docs/api.md)。
 
@@ -127,7 +127,7 @@ mvn package
 java -jar target/campus-share-backend-0.1.0-SNAPSHOT.jar --spring.profiles.active=demo
 ```
 
-已通过 32 项集成测试，使用独立 H2 内存库，覆盖认证、物品权限、筛选分页、收藏隔离、图片上传、预约状态流转、并发审核冲突、相邻时段、重复操作、超时及日志失败时事务回滚。H2 通过不代表真实 MySQL 环境已经验证；切换 MySQL 后仍需在自己的数据库上执行接口样例。
+当前包含 53 项集成测试，使用独立 H2 内存库，覆盖认证、物品权限、筛选分页、收藏隔离、图片上传、预约状态流转、并发审核冲突、相邻时段、重复操作、超时、日志失败时事务回滚、缓存与限流。H2 通过不代表真实 MySQL 环境已经验证；切换 MySQL 后仍需在自己的数据库上执行接口样例。
 
 如果本机 Maven 的镜像连接失败，可临时指定项目内的官方仓库配置，不必修改全局设置：
 
@@ -138,10 +138,10 @@ mvn -s .mvn/central-settings.xml spring-boot:run "-Dspring-boot.run.profiles=dem
 
 ## 前后端一起运行
 
-后端启动后，在另一个终端运行：
+后端启动后，在项目根目录另开一个终端运行：
 
 ```powershell
-cd "D:\desktop\校园闲置物品借用平台\frontend"
+cd frontend
 npm run dev
 ```
 
@@ -151,7 +151,7 @@ npm run dev
 
 图片保存在 `backend/data/uploads`（由后端工作目录决定），可用 `UPLOAD_DIRECTORY` 环境变量设置绝对路径。该目录已被 Git 忽略，部署时应使用持久化目录。接口限制 1MB，只接受 JPG、PNG、WebP 文件头；文件名由服务端生成，仅允许本人上传的图片关联到本人发布的物品。未被物品引用的上传文件暂不自动清理。
 
-完整接口见 [API 说明](docs/api.md)，业务和状态图见 [业务说明](docs/business.md)，验证范围见 [验证记录](docs/verification.md)。Redis 已用于登录会话和接口限流；AI 尚未接入。
+完整接口见 [API 说明](docs/api.md)，业务和状态图见 [业务说明](docs/business.md)，验证范围见 [验证记录](docs/verification.md)。Redis 已用于登录会话、接口限流、物品详情缓存和今日热门榜。
 
 
 ## MyBatis-Plus 使用方式

@@ -1,4 +1,4 @@
-#Vue 3 前端（已接后端）
+# Vue 3 前端（已接后端）
 
 首页新增“校园今日热门”，展示当天浏览热度、排名和校区，可点击查看物品详情，并支持手动刷新、空榜提示和失败重试。榜单按北京时间每日切换，只展示当前上架物品。
 
@@ -10,17 +10,17 @@
 
 已添加 IDEA 一键运行配置，无需手动输入启动命令，操作见 [IDEA 运行说明](../.run/README.md)。
 
-需要 Node.js 20.19+ 或 22.12+。先启动 Redis（默认 `127.0.0.1:6379`，见 [后端说明](../backend/README.md)），再启动 Java 后端和前端：
+需要 Node.js 20.19+ 或 22.12+。先启动 Redis（默认 `127.0.0.1:6379`，见 [后端说明](../backend/README.md)），再启动 Java 后端和前端。以下命令均在项目根目录执行：
 
 ```powershell
-cd "D:\desktop\校园闲置物品借用平台\backend"
+cd backend
 mvn -s .mvn/central-settings.xml spring-boot:run "-Dspring-boot.run.profiles=demo"
 ```
 
-另开一个终端：
+另开一个终端，同样从项目根目录进入前端：
 
 ```powershell
-cd "D:\desktop\校园闲置物品借用平台\frontend"
+cd frontend
 npm install
 npm run dev
 ```
